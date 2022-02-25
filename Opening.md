@@ -52,5 +52,7 @@
 
 ## 参考文献
 
-*基于小样本学习的图像分类技术综述*  刘颖、雷研博等 自动化学报
-
+[1] *基于小样本学习的图像分类技术综述*  刘颖、雷研博等 自动化学报  
+[2] *A Baseline for Few-Shot Image Classification.* Guneet S. Dhillon, Pratik Chaudhari, Avinash Ravichandran, Stefano Soatto  
+[3] *A Universal Representation Transformer Layer for Few-Shot Image Classification.* Lu Liu1,William Hamilton, Guodong Long, Jing Jiang, Hugo Larochelle.  
+[4] *A Closer Look at Few-shot Classification.* Wei-Yu Chen, Yen-Cheng Liu, Zsolt Kira, Yu-Chiang Frank Wang, Jia-Bin Huang
