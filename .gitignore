@@ -132,3 +132,7 @@ dmypy.json
 forExport.md
 a.*
 tutorial
+
+#dataset files
+dataset/
+!dataset/README.md
