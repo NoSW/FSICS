@@ -129,3 +129,11 @@ dmypy.json
 .pyre/
 
 .vscode
+
+forExport.md
+a.*
+tutorial
+
+#dataset files
+!dataset/README.md
+dataset/
