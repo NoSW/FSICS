@@ -134,6 +134,9 @@ forExport.md
 a.*
 tutorial
 
-#dataset files
-!dataset/README.md
-dataset/
+#projects
+moco
+simclr
+yolov5
+toy_cifar10_tutorial/cifar_net.pth
+toy_cifar10_tutorial/data/
