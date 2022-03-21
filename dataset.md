@@ -38,4 +38,4 @@ Introduced by Brenden et al. in [Human-level concept learning through probabilis
 
 [Few-Shot Classification Leaderboard](https://fewshot.org/miniimagenet.html), a project keeping on track with the state-of-the-art for the few-shot classification.
 
-[papers with code (datasets)](https://paperswithcode.com/datasets) a website collecting papers
+[papers with code (datasets)](https://paperswithcode.com/datasets), a website collecting papers
