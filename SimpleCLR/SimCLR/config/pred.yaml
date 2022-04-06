@@ -1,0 +1,17 @@
+workers: 4
+batch_size: 128
+image_size: 84
+
+
+optimizer: "Adam"
+
+projection_dim: 64
+# model_path: "checkpoint\\checkpoint_100.tar"
+model_path: "..\\..\\moco-v3\\vit-b-300ep.pth.tar"
+arch: "mocov3"   # simclr # resnet
+encoder: "vit_base" #resnet50
+baseline: True
+
+logistic_batch_size: 1
+logistic_epochs: 50
+n_classes: 5
