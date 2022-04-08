@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 import torch
 
 class FSDataset(Dataset):
-    def __init__(self, annotations_file, img_dir, n_classes, transform=None, target_transform=None):
+    def __init__(self, annotations_file, img_dir = "", n_classes=5, transform=None, target_transform=None):
         self.img_labels = pd.read_csv(annotations_file)
         self.img_dir = img_dir
         self.n_classes = n_classes

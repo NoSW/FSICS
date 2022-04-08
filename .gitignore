@@ -133,10 +133,20 @@ dmypy.json
 forExport.md
 a.*
 tutorial
+dataset
+data
+omniglot
 
 #projects
-moco
-simclr
+moco-v3
 yolov5
-toy_cifar10_tutorial/cifar_net.pth
-toy_cifar10_tutorial/data/
+FSL-Mate
+
+SimpleCLR/SimpleCLR/datasets
+
+*.tar
+cmd.txt
+cifar_net.pth
+SimpleCLR/SimCLR/mini-imagenet-query.csv
+SimpleCLR/SimCLR/mini-imagenet-support.csv
+SimpleCLR/SimCLR/result.txt

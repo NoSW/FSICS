@@ -1,8 +1,11 @@
 import math
 import os
 import argparse
+import random 
+from os.path import join
 import torch
 import torchvision
+import pandas as pd
 
 import numpy as np
 
@@ -40,12 +43,12 @@ def inference(loader, model, device):
         feature_vector.extend(h.cpu().detach().numpy())
         labels_vector.extend(y.numpy())
 
-        if step % 20 == 0:
-            print(f"Step [{step}/{len(loader)}]\t Computing features...")
+        # if step % 20 == 0:
+        #     print(f"Step [{step}/{len(loader)}]\t Computing features...")
 
     feature_vector = np.array(feature_vector)
     labels_vector = np.array(labels_vector)
-    print("Features shape {}".format(feature_vector.shape))
+    # print("Features shape {}".format(feature_vector.shape))
     return feature_vector, labels_vector
 
 def create_data_loaders_from_arrays(X_train, y_train, X_test, y_test, batch_size):
@@ -106,8 +109,6 @@ def test(args, loader, classifier, criterion, optimizer):
 
     return loss_epoch, accuracy_epoch
 
-
-
 def regular(args, loader, classifier, optimizer):
     loss_epoch = 0
     accuracy_epoch = 0
@@ -129,17 +130,46 @@ def regular(args, loader, classifier, optimizer):
 
     return loss_epoch, accuracy_epoch
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SimCLR")
-    config = yaml_config_hook("./config/pred.yaml")
-    for k, v in config.items():
-        parser.add_argument(f"--{k}", default=v, type=type(v))
-
-    args = parser.parse_args()
-    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+def generate_csv(dataset, all_classes, all_shot, way, shot):
+    way = min(way, all_classes)
+    shot = min(shot, all_shot)
+    dataset_path = join("..\\..\\dataset", dataset)
+    subfolers = ["train", "test", "val"]
+    sfn = []
+    sln = []
+    qfn = []
+    qln = []
+    sample_label = random.sample(range(0, all_classes), way)
+    sample_shot = random.sample(range(0, all_shot), shot)
+    label_cnt = 0
+    label_rename = 0
+    for subfoler in subfolers:
+        path = join(dataset_path, subfoler)
+        classes = os.listdir(path)
+        for cls in classes:
+            if label_cnt in sample_label:
+                cls_path = join(path, cls)
+                images = os.listdir(cls_path)
+                img_cnt = 0
+                for img in images:
+                    if img_cnt in sample_shot:
+                        sfn.append(join(path, join(cls, img)))
+                        sln.append(label_rename)
+                    else:
+                        qfn.append(join(path, join(cls, img)))
+                        qln.append(label_rename)
+                    img_cnt += 1
+                label_rename += 1
+            label_cnt += 1
     
 
+    pd.DataFrame({ "path":sfn, "label":sln}).to_csv("{}-support.csv".format(dataset), header=True, index=False)
+    pd.DataFrame({ "path":qfn, "label":qln}).to_csv("{}-query.csv".format(dataset), header=True, index=False)
+
+def worker(args):
+    # ------------------------------------------------------------------------
+    # Loading model
+    # ------------------------------------------------------------------------
     if args.arch == "resnet":
         if args.encoder == "resnet18":
             encoder =  torchvision.models.resnet18(pretrained=True)
@@ -159,7 +189,6 @@ if __name__ == "__main__":
             linear_keyword = 'fc'
         else:
             raise NotImplementedError
-            
         checkpoint = torch.load(args.model_path, map_location="cpu")
         state_dict = checkpoint['state_dict']
         for k in list(state_dict.keys()):
@@ -172,9 +201,6 @@ if __name__ == "__main__":
         encoder.load_state_dict(state_dict, strict=False)      
     else:
         raise NotImplementedError
-
-    print(encoder)
-
     if args.encoder.startswith('vit'):
         n_features = encoder.head.in_features
         encoder.head = Identity()
@@ -182,92 +208,144 @@ if __name__ == "__main__":
     else:
         n_features = encoder.fc.in_features  # get dimensions of fc layer
         encoder.fc = Identity()
-
     # load pre-trained model from checkpoint
     model = SimCLR(encoder, args.projection_dim, n_features)
     if args.arch == 'simclr':
         model.load_state_dict(torch.load(args.model_path, map_location=args.device.type))
     model = model.to(args.device)
     model.eval()
+    # ------------------------------------------------------------------------
+    # Beginning 
+    # ------------------------------------------------------------------------
+    epi_acc = 0.0
+    for epi in range(0, args.episode):
+        # ------------------------------------------------------------------------
+        # Loading data
+        # ------------------------------------------------------------------------
+        generate_csv(dataset=args.dataset_name, all_classes=args.all_classes, all_shot=args.all_shot, 
+            way=args.n_classes, shot=args.shot)
+        #
+        support_set = FSDataset(
+                annotations_file = "{}-support.csv".format(args.dataset_name),
+                n_classes= args.n_classes,
+                transform=TransformsSimCLR(size=args.image_size).test_transform,
+                target_transform=None
+        )
+        query_set = FSDataset(
+                annotations_file = "{}-query.csv".format(args.dataset_name),
+                n_classes= args.n_classes,
+                transform=TransformsSimCLR(size=args.image_size).test_transform,
+                target_transform=None
+        )
+        #
+        support_loader = torch.utils.data.DataLoader(
+            support_set, batch_size=args.logistic_batch_size,
+            shuffle=True, drop_last=False, num_workers=args.workers)
+        query_loader = torch.utils.data.DataLoader(
+            query_set, batch_size= args.logistic_batch_size,
+            shuffle=False, drop_last=False, num_workers=args.workers)
+        # ------------------------------------------------------------------------
+        # Get feature
+        # ------------------------------------------------------------------------
+        # print("### Creating features from pre-trained context model ###")
+        support_X, support_y = inference(support_loader, model, args.device)
+        query_X, query_y = inference(query_loader, model,  args.device)
+        #
+        arr_support_loader, arr_query_loader = create_data_loaders_from_arrays(
+            support_X, support_y, query_X, query_y, args.logistic_batch_size
+        )
+        #
+        mean_support_feature = torch.zeros(args.n_classes, model.n_features)
+        for step, (x, y) in enumerate(arr_support_loader):
+            mean_support_feature[y.argmax()] += x[0]
+        n_shot = len(arr_support_loader) / args.n_classes
+        mean_support_feature = F.normalize(mean_support_feature / n_shot)
+        #
+        # ------------------------------------------------------------------------
+        # Define classifier
+        # ------------------------------------------------------------------------
+        #
+        classifier = LinearClassifier(model.n_features, args.n_classes,
+            weight=mean_support_feature, bias=torch.zeros(args.n_classes))
+        #
+        classifier = classifier.to(args.device)
+        optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
+        criterion = torch.nn.CrossEntropyLoss()
+        #
+        # ------------------------------------------------------------------------
+        # Fine-tuning
+        # ------------------------------------------------------------------------
+        for epoch in range(args.logistic_epochs):
+            # loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
+            # print(
+            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
+            # )
+            loss_epoch, accuracy_epoch = train(
+                args, arr_support_loader, classifier, criterion, optimizer
+            )
+            # print(
+            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
+            # )
+        # ------------------------------------------------------------------------
+        # Entropy_regularization
+        # ------------------------------------------------------------------------
+        # for epoch in range(args.logistic_epochs):
+        #     loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
+        #     print(
+        #         f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
+        #     )
+        #
+        # ------------------------------------------------------------------------
+        # Testing
+        # ------------------------------------------------------------------------
+        loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+        # print(
+        #     f"[FINAL]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
+        # )
+        epi_acc += accuracy_epoch / len(arr_query_loader)
+    #
+    print(f"{args}\naccuary:{epi_acc / args.episode }")
 
-    print(model)
-    # -------------------------------------------------
 
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="SimCLR")
+    config = yaml_config_hook("./config/pred.yaml")
+    for k, v in config.items():
+        parser.add_argument(f"--{k}", default=v, type=type(v))
 
-    train_dataset = FSDataset(
-            annotations_file ="../../dataset/mini-imagenet/support_set.csv",
-            img_dir = "..\..\dataset\mini-imagenet",
-            n_classes= args.n_classes,
-            transform=TransformsSimCLR(size=args.image_size).test_transform,
-            target_transform=None
-    )
-    test_dataset = FSDataset(
-            annotations_file = "../../dataset/mini-imagenet/query_set.csv",
-            img_dir = "..\..\dataset\mini-imagenet",
-            n_classes= args.n_classes,
-            transform=TransformsSimCLR(size=args.image_size).test_transform,
-            target_transform=None
-    )
+    args = parser.parse_args()
+    args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
     
 
-    support_loader = torch.utils.data.DataLoader(
-        train_dataset, batch_size=args.logistic_batch_size,
-        shuffle=True, drop_last=False, num_workers=args.workers)
+    dataset_list = ["mini-imagenet", "FC100", "tiered_imagenet"]
+    for dataset_ins in dataset_list:
+        args.dataset_name = dataset_ins
+        #
+        model_list = [
+            # arch       encoder        path
+            ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
+            ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
+            ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
+            ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
+            ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
+            ["resnet", "resnet18",""],
+            ["resnet", "resnet50",""],
+            ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
+            ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
+        ]
+        for model_ins in model_list:
+            args.arch = model_ins[0]
+            args.encoder = model_ins[1]
+            args.model_path = model_ins[2]
 
-    query_loader = torch.utils.data.DataLoader(
-        test_dataset, batch_size= args.logistic_batch_size,
-        shuffle=False, drop_last=False, num_workers=args.workers)
-
-    # -------------------------------------------------
-
-    print("### Creating features from pre-trained context model ###")
-    support_X, support_y = inference(support_loader, model, args.device)
-    query_X, query_y = inference(query_loader, model,  args.device)
-   
-    arr_support_loader, arr_query_loader = create_data_loaders_from_arrays(
-        support_X, support_y, query_X, query_y, args.logistic_batch_size
-    )
-
-    mean_support_feature = torch.zeros(args.n_classes, model.n_features)
-    for step, (x, y) in enumerate(arr_support_loader):
-        mean_support_feature[y.argmax()] += x[0]
-    n_shot = len(arr_support_loader) / args.n_classes
-    mean_support_feature = F.normalize(mean_support_feature / n_shot)
-
-    classifier = LinearClassifier(model.n_features, args.n_classes,
-        weight=mean_support_feature, bias=torch.zeros(args.n_classes))
-
-    classifier = classifier.to(args.device)
-    optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
-    criterion = torch.nn.CrossEntropyLoss()
-
-    # fine-tuning
-    for epoch in range(args.logistic_epochs):
-        # loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
-        # print(
-        #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-        # )
-        loss_epoch, accuracy_epoch = train(
-            args, arr_support_loader, classifier, criterion, optimizer
-        )
-        print(
-            f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
-        )
-
-    # # entropy_regularization
-    # for epoch in range(args.logistic_epochs):
-    #     loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
-    #     print(
-    #         f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-    #     )
-
-    # final testing
-    loss_epoch, accuracy_epoch = test(
-        args, arr_query_loader, classifier, criterion, optimizer
-    )
-    print(
-        f"[FINAL]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-    )
-
+            way_list = [2, 5, 10, 20, 50, 100]
+            shot_list = [1, 5, 10, 20, 50, 100, 200]
+            for way_ins in way_list:
+                for shot_ins in shot_list:
+                    args.way = way_ins
+                    args.shot = shot_ins
+                    worker(args)
+                    
 
   
