@@ -1,20 +1,18 @@
-workers: 4
+# fixed parapmeter
+workers: 8
 batch_size: 128
-logistic_batch_size: 1
 projection_dim: 64
-
-
 optimizer: "Adam"
+logistic_epochs: 50 
+sample_epoch: 10
+n_classes: 100
+image_size: 224
+
+
+# instance parapmeter
 model_path: "..\\..\\moco-v3\\vit-b-300ep.pth.tar"
 arch: "mocov3"   # simclr # resnet
 encoder: "vit_base" #resnet50
-
-logistic_epochs: 50
-episode: 100 #  time of test
-
 dataset_name: "mini-imagenet"
-all_classes: 100
-all_shot: 600
-image_size: 224
-n_classes: 5
+way: 5
 shot: 5
