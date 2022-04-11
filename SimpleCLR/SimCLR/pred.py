@@ -49,8 +49,8 @@ def inference(loader, model, device):
         feature_vector.extend(h.cpu().detach().numpy())
         labels_vector.extend(y.numpy())
 
-        print(end='\r')
-        print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
+        #print(end='\r')
+        #print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
 
     feature_vector = np.array(feature_vector)
     labels_vector = np.array(labels_vector)
@@ -139,7 +139,7 @@ def regular(args, loader, classifier, optimizer):
 
 def generate_csv(dataset):
     dataset_path = join("..\\..\\dataset", dataset)
-    subfolders = ["train", "trest", "val"]
+    subfolders = ["train", "test", "val"]
     fn = []
     ln = []
     label_cnt = 0
@@ -156,7 +156,7 @@ def generate_csv(dataset):
     pd.DataFrame({ "path":fn, "label":ln}).to_csv("{}.csv".format(dataset), header=True, index=False)
     return label_cnt
 
-def generate_csv(dataset, subfolders):
+def generate_csv_debug(dataset, subfolders):
     dataset_path = join("..\\..\\dataset", dataset)
     #
     fn = []
@@ -220,12 +220,8 @@ def sample_from_loader(all_features, args):
     )
     return arr_support_loader, arr_query_loader, sample_way
 
-def worker(args, all_features=None):
-    all_features = args.all_features
+def worker(args, all_features):
     begin = time.time()
-    # ------------------------------------------------------------------------
-    # Beginning
-    # ------------------------------------------------------------------------
     sample_acc = 0.0
     for epi in range(0, args.sample_epoch):
         #
@@ -306,7 +302,7 @@ if __name__ == "__main__":
     dataset_dict = {}
     for dataset_ins in dataset_list:
         args.dataset_name = dataset_ins
-        args.n_classes = generate_csv(dataset=args.dataset_name, subfolders=["val"])
+        args.n_classes = generate_csv(dataset=args.dataset_name)
         #
         dataset = FSDataset(
                 annotations_file = "{}.csv".format(args.dataset_name),
@@ -407,17 +403,16 @@ if __name__ == "__main__":
             # ------------------------------------------------------------------------
             X, y = inference(dataloader, model, args.device)
             all_features = (X, y)
-            args.all_features = all_features
             # ------------------------------------------------------------------------
             # M-way, N-shot
             # ------------------------------------------------------------------------
             way_list = [2, 5, 10, 20, 50, 100]
-            shot_list = [1, 5, 10, 15, 20, 30, 50, 70, 100, 150, 200]
+            shot_list = [1, 5, 10, 15, 20, 30, 50, 70, 100, 150]
             for way_ins in way_list:
                 for shot_ins in shot_list:
                     args.way = way_ins
                     args.shot = shot_ins
-                    res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args)
+                    res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, all_features)
                 
     print("=> Begining write results ...")
     with open('result.txt', 'w') as f:
@@ -432,8 +427,11 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import numpy as np
 
-    
-
+    for dataset_ins in dataset_list:
+        for model_ins in model_list:
+            for way_ins in way_list:
+                res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-0shot"] = 1.0/way_ins
+    shot_list.insert(0, 0)
     for dataset_ins in dataset_list:
         for way_ins in way_list:
             for model_ins in model_list:
@@ -442,10 +440,12 @@ if __name__ == "__main__":
                     key = f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"
                     y.append(res_dict[key])
                 y = np.array(y)
-                plt.ylim(0.0, 1.0)
-                plt.plot(np.array(shot_list), y, 'o-', label=f"{model_ins[0]-model_ins[1]}")
+                plt.plot(np.array(shot_list), y, '^-', label=f"{model_ins[0]}-{model_ins[1]}")
             plt.title(f'{way_ins}-way,n-shot ({dataset_ins})')
+            plt.ylim(0.0, 1.0)
+            plt.xlim(0, shot_list[-1])
             plt.xlabel('shot')
             plt.ylabel('accuracy')
             plt.legend()
             plt.savefig(f".\\fig\\{dataset_ins}_{way_ins}way_nshot.jpg")
+            plt.cla()
