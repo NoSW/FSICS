@@ -12,15 +12,14 @@ import torchvision
 import pandas as pd
 
 import numpy as np
+from result.NonFrozenClassifier import NonFrozenClassifier
 
 from simclr import SimCLR
 
 from linear_classifier import LinearClassifier
 from simclr.modules.transformations import TransformsSimCLR
-from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
 
 from utils import yaml_config_hook
-from torch.utils.data import DataLoader
 from fs_dataset import FSDataset
 import torch.nn.functional as F
 import torchvision.models as torchvision_models
@@ -28,6 +27,12 @@ import vits
 from simclr.modules.identity import Identity
 
 logging.basicConfig(level=logging.INFO)
+
+def entropy(p):
+    e = 0.0
+    for p_i in p:
+        e += p_i * math.log(p_i)
+    return -e
 
 def inference(loader, model, device):
     #print(f"=> Compute feature 0.00%. ", end='')
@@ -52,23 +57,7 @@ def inference(loader, model, device):
     print(f"{(end-begin)/60:.2f}min")
     return feature_vector, labels_vector
 
-def create_data_loaders_from_arrays(X_train, y_train, X_test, y_test, batch_size):
-    train = torch.utils.data.TensorDataset(
-        torch.from_numpy(X_train), torch.from_numpy(y_train)
-    )
-    train_loader = torch.utils.data.DataLoader(
-        train, batch_size=batch_size, shuffle=False
-    )
-
-    test = torch.utils.data.TensorDataset(
-        torch.from_numpy(X_test), torch.from_numpy(y_test)
-    )
-    test_loader = torch.utils.data.DataLoader(
-        test, batch_size=batch_size, shuffle=False
-    )
-    return train_loader, test_loader
-
-def train(args, loader, classifier, criterion, optimizer):
+def train(args, loader, classifier, criterion, optimizer, test_loader):
     loss_epoch = 0
     accuracy_epoch = 0
     for step, (x, y) in enumerate(loader):
@@ -79,7 +68,16 @@ def train(args, loader, classifier, criterion, optimizer):
 
         output = classifier(x)
 
-        loss = criterion(output, y)
+        if args.entropy_regularization:
+            test_loss = 0.0
+            for _, x_test, _ in enumerate(test_loader):
+                x_test = x_test.to(args.device)
+                output_test = classifier(x_test)
+                test_loss += entropy(output_test[0])
+            loss = criterion(output, y) + test_loss / len(test_loader)
+        else:
+            loss = criterion(output, y)
+
         acc = (output.argmax() == y.argmax()).sum().item() / y.size(0)
         accuracy_epoch += acc
 
@@ -110,36 +108,14 @@ def test(args, loader, classifier, criterion, optimizer):
 
     return loss_epoch, accuracy_epoch
 
-def entropy_regularization(args, loader, classifier, optimizer):
-    def entropy(p):
-        e = 0.0
-        for p_i in p:
-            e += p_i * math.log(p_i)
-        return -e
-
-    loss_epoch = 0
-    accuracy_epoch = 0
-    for _, (x, y) in enumerate(loader):
-        optimizer.zero_grad()
-
-        x = x.to(args.device)
-        y = y.to(args.device)
-
-        output = classifier(x)
-
-        loss_epoch += entropy(output[0])
-
-        acc = (output.argmax() == y.argmax()).sum().item() / y.size(0)
-        accuracy_epoch += acc
-    loss_epoch /= len(loader)
-    loss_epoch.backward()
-    optimizer.step()
-
-    return loss_epoch, accuracy_epoch
 
 def generate_csv(dataset):
     dataset_path = join("..\\..\\dataset", dataset)
-    subfolders = ["train", "test", "val"]
+    subfolders = [
+        # "train",
+        #  "test",
+        "val"
+        ]
     fn = []
     ln = []
     label_cnt = 0
@@ -153,91 +129,30 @@ def generate_csv(dataset):
                 fn.append(join(path, join(cls, img)))
                 ln.append(label_cnt)
             label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
-    return label_cnt
+    csv_fn = join(RESULT_FOLDER, f"{dataset}_{TIME_FN}.csv")
+    pd.DataFrame({ "path":fn, "label":ln}).to_csv(csv_fn, header=True, index=False)
+    return label_cnt, csv_fn
 
-def generate_csv_debug(dataset, subfolders):
-    dataset_path = join("..\\..\\dataset", dataset)
-    #
-    fn = []
-    ln = []
-    label_cnt = 0
-    for subfoler in subfolders:
-        path = join(dataset_path, subfoler)
-        classes = os.listdir(path)
-        for cls in classes:
-            cls_path = join(path, cls)
-            images = os.listdir(cls_path)
-            img_cnt = 0
-            for img in images:
-                if img_cnt >= 200:
-                    break
-                fn.append(join(path, join(cls, img)))
-                ln.append(label_cnt)
-                img_cnt += 1
-            label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
-    return label_cnt
-
-def sample_from_loader(all_features, args):
-    #
-    sample_way = random.sample(range(0, args.n_classes), args.way)
-    index_mapping = {}
-    for i in range(len(sample_way)):
-        index_mapping[sample_way[i]] = i
-    #
-    shot_cnt = [0] * args.way
-    support_X_list = []
-    support_y_list = []
-    query_X_list = []
-    query_y_list = []
-
-    for i in range(len(all_features[0])):
-        X = all_features[0][i]
-        y = all_features[1][i]
-        if y in  sample_way:
-            tmp_label = [0.0] * args.way
-            tmp_label[index_mapping[y]] = 1.0
-            if shot_cnt[index_mapping[y]] < args.shot:
-                support_X_list.append(X)
-                support_y_list.append(tmp_label)
-                shot_cnt[index_mapping[y]] += 1
-            else:
-                query_X_list.append(X)
-                query_y_list.append(tmp_label)
-
-    support = torch.utils.data.TensorDataset(
-        torch.from_numpy(np.array(support_X_list)), torch.from_numpy(np.array(support_y_list))
-    )
-    query = torch.utils.data.TensorDataset(
-        torch.from_numpy(np.array(query_X_list)), torch.from_numpy(np.array(query_y_list))
-    )
-    arr_support_loader = torch.utils.data.DataLoader(
-        support, batch_size=args.logistic_batch_size, shuffle=True,
-    )
-    arr_query_loader = torch.utils.data.DataLoader(
-        query, batch_size=args.logistic_batch_size, shuffle=True
-    )
-    return arr_support_loader, arr_query_loader, sample_way
 
 def worker(args, all_features):
     begin = time.time()
     sample_acc = 0.0
     for epi in range(0, args.sample_epoch):
         #
-        arr_support_loader, arr_query_loader, sample_way = sample_from_loader(all_features, args)
-        mean_support_feature = torch.zeros(args.way, args.n_features)
-        for step, (x, y) in enumerate(arr_support_loader):
-            mean_support_feature[y.argmax()] += x[0]
-        n_shot = len(arr_support_loader) / args.way
-        mean_support_feature = F.normalize(mean_support_feature / n_shot)
+       
+        if args.support_init:
+            mean_support_feature = torch.zeros(args.way, args.n_features)
+            for step, (x, y) in enumerate(arr_support_loader):
+                mean_support_feature[y.argmax()] += x[0]
+            n_shot = len(arr_support_loader) / args.way
+            mean_support_feature = F.normalize(mean_support_feature / n_shot)
+        else:
+            mean_support_feature = None
         #
         # ------------------------------------------------------------------------
         # Define classifier
         # ------------------------------------------------------------------------
-        #
-        classifier = LinearClassifier(args.n_features, args.way,
-            weight=mean_support_feature, bias=torch.zeros(args.way))
+        classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
         #
         classifier = classifier.to(args.device)
         optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
@@ -247,16 +162,13 @@ def worker(args, all_features):
         # Fine-tuning
         # ------------------------------------------------------------------------
         for epoch in range(args.logistic_epochs):
-            # loss_epoch, accuracy_epoch = entropy_regularization(args, arr_query_loader, classifier,  optimizer)
-            # print(
-            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-            # )
             loss_epoch, accuracy_epoch = train(
                 args, arr_support_loader, classifier, criterion, optimizer
             )
-            # print(
-            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
-            # )
+            print(
+                f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
+            )
+ 
         # ------------------------------------------------------------------------
         # Testing
         # ------------------------------------------------------------------------
@@ -279,31 +191,57 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
     args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.logistic_batch_size = 1
+
+    # ------------------------------------------------------------------------
+    # record cfg
+    # ------------------------------------------------------------------------
+
+    dataset_list = [
+        "mini-imagenet",
+        # "FC100",
+        # "tiered_imagenet",
+    ]
+
+    model_list = [
+        # arch       encoder        path
+        # ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
+        ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
+        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
+        # ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
+        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
+        # ["resnet", "resnet18",""],
+        # ["resnet", "resnet50",""],
+        # ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
+        # ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
+    ]
+
+    way_list = [2, 5, 10]
+    shot_list = [1, 5, 10, 15, 20, 30, 50]
+
+    # make dir
+    TIME_FN = f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}"
+    RESULT_FOLDER = join("result", f"{args.fn}_{TIME_FN}")
+    os.mkdir(RESULT_FOLDER)
+   
 
     # ------------------------------------------------------------------------
     # Loading data
     # ------------------------------------------------------------------------
     begin = time.time()
-    dataset_list = [
-        #"mini-imagenet",
-         "FC100",
-        # "tiered_imagenet",
-    ]
     dataset_dict = {}
     for dataset_ins in dataset_list:
         args.dataset_name = dataset_ins
-        args.n_classes = generate_csv(dataset=args.dataset_name)
+        args.n_classes, csv_fn = generate_csv(dataset=args.dataset_name)
         #
         dataset = FSDataset(
-                annotations_file = "{}.csv".format(args.dataset_name),
+                annotations_file = csv_fn,
                 n_classes= args.n_classes,
                 transform=TransformsSimCLR(size=args.image_size).test_transform,
                 target_transform=None
         )
         dataset_dict[args.dataset_name] = torch.utils.data.DataLoader(
             dataset, batch_size=args.batch_size,
-            shuffle=False, drop_last=False, num_workers=args.workers)
+            shuffle=True, drop_last=False, num_workers=args.workers)
 
     end = time.time()
     print(f"=> Loading datasets done. {end-begin:.2f}s ")
@@ -312,18 +250,6 @@ if __name__ == "__main__":
     # Loading model
     # ------------------------------------------------------------------------
     begin = time.time()
-    model_list = [
-        # arch       encoder        path
-        # ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
-       #  ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
-        #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
-        # ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
-        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
-        # ["resnet", "resnet18",""],
-        ["resnet", "resnet50",""],
-        ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
-        ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
-    ]
     model_dict = {}
     for model_ins in model_list:
         args.arch = model_ins[0]
@@ -370,11 +296,20 @@ if __name__ == "__main__":
             encoder.fc = Identity()
         # load pre-trained model from checkpoint
         mn = f"{args.arch}-{args.encoder}"
-        model_dict[mn] = SimCLR(encoder, args.projection_dim, n_features)
-        if args.arch == 'simclr':
-            model_dict[mn].load_state_dict(torch.load(args.model_path, map_location=args.device.type))
+        model_dict[mn] = NonFrozenClassifier(encoder, n_features=n_features, n_classes=args.n_classes)
+
     end = time.time()
     print(f"=> Loading models done. {end-begin:.2f}s")
+
+    with open(join(RESULT_FOLDER, "cfg"), 'w') as f:
+       f.write(f"dataset_list:{dataset_list}\n")
+       f.write(f"model_list:{model_list}\n")
+       f.write(f"way_list:{way_list}\n")
+       f.write(f"shot_list:{shot_list}\n\n")
+       
+       f.write("\nyaml:")
+       for k in args.__dict__:
+           f.write(f"{k}: {args.__dict__[k]}\n")
 
     res_dict = {}
     for dataset_ins in dataset_list:
@@ -390,25 +325,16 @@ if __name__ == "__main__":
             model.eval()
             args.n_features = model.n_features
             # ------------------------------------------------------------------------
-            # Get feature
-            # ------------------------------------------------------------------------
-            X, y = inference(dataloader, model, args.device)
-            all_features = (X, y)
-            # ------------------------------------------------------------------------
             # M-way, N-shot
             # ------------------------------------------------------------------------
-            way_list = [
-                2, 5, 10, 20, 50,100]
-            shot_list = [
-                 1, 5, 10, 15, 20, 30, 50, 70, 100, 150]
             for way_ins in way_list:
                 for shot_ins in shot_list:
                     args.way = way_ins
                     args.shot = shot_ins
-                    res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, all_features)
+                    res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, )
                 
     print("=> Begining write results ...")
-    with open('result.txt', 'w') as f:
+    with open(join(RESULT_FOLDER, f"result_randInit_{TIME_FN}.txt"), 'w') as f:
         for dataset_ins in dataset_list:
             for model_ins in model_list:
                 for way_ins in way_list:
@@ -440,5 +366,8 @@ if __name__ == "__main__":
             plt.xlabel('shot')
             plt.ylabel('accuracy')
             plt.legend()
-            plt.savefig(f".\\fig\\{dataset_ins}_{way_ins}way_nshot.jpg")
+            plt.savefig(join(RESULT_FOLDER, f"{dataset_ins}_{way_ins}way_nshot_randInit_{TIME_FN}.jpg"))
             plt.cla()
+
+    with open(join(RESULT_FOLDER, "Done"), 'w') as f:
+        pass

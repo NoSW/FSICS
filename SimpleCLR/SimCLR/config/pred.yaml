@@ -7,6 +7,7 @@ logistic_epochs: 50
 sample_epoch: 10
 n_classes: 100
 image_size: 224
+logistic_batch_size: 1
 
 
 # instance parapmeter
@@ -16,3 +17,10 @@ encoder: "vit_base" #resnet50
 dataset_name: "mini-imagenet"
 way: 5
 shot: 5
+
+fn: ""
+
+# tricks
+support_init: True
+entropy_regularization: True
+

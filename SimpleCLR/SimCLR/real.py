@@ -29,12 +29,19 @@ from simclr.modules.identity import Identity
 
 logging.basicConfig(level=logging.INFO)
 
+def entropy(p):
+    e = 0.0
+    for p_i in p:
+        e += p_i * math.log(p_i)
+    return -e
+
 def inference(loader, model, device):
     #print(f"=> Compute feature 0.00%. ", end='')
     begin = time.time()
     feature_vector = []
     labels_vector = []
     for step, (x, y) in enumerate(loader):
+
         x = x.to(device)
         with torch.no_grad():
             h, _, z, _ = model(x, x)
@@ -43,8 +50,8 @@ def inference(loader, model, device):
         feature_vector.extend(h.cpu().detach().numpy())
         labels_vector.extend(y.numpy())
 
-        #print(end='\r')
-        #print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
+        print(end='\r')
+        print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
 
     feature_vector = np.array(feature_vector)
     labels_vector = np.array(labels_vector)
@@ -110,13 +117,7 @@ def test(args, loader, classifier, criterion, optimizer):
 
     return loss_epoch, accuracy_epoch
 
-def entropy_regularization(args, loader, classifier, optimizer):
-    def entropy(p):
-        e = 0.0
-        for p_i in p:
-            e += p_i * math.log(p_i)
-        return -e
-
+def regular(args, loader, classifier, optimizer):
     loss_epoch = 0
     accuracy_epoch = 0
     for _, (x, y) in enumerate(loader):
@@ -139,7 +140,7 @@ def entropy_regularization(args, loader, classifier, optimizer):
 
 def generate_csv(dataset):
     dataset_path = join("..\\..\\dataset", dataset)
-    subfolders = ["train", "test", "val"]
+    subfolders = ["train"]
     fn = []
     ln = []
     label_cnt = 0
@@ -153,7 +154,7 @@ def generate_csv(dataset):
                 fn.append(join(path, join(cls, img)))
                 ln.append(label_cnt)
             label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
+    pd.DataFrame({ "path":fn, "label":ln}).to_csv("{}.csv".format(dataset), header=True, index=False)
     return label_cnt
 
 def generate_csv_debug(dataset, subfolders):
@@ -176,7 +177,7 @@ def generate_csv_debug(dataset, subfolders):
                 ln.append(label_cnt)
                 img_cnt += 1
             label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
+    pd.DataFrame({ "path":fn, "label":ln}).to_csv("{}.csv".format(dataset), header=True, index=False)
     return label_cnt
 
 def sample_from_loader(all_features, args):
@@ -247,7 +248,7 @@ def worker(args, all_features):
         # Fine-tuning
         # ------------------------------------------------------------------------
         for epoch in range(args.logistic_epochs):
-            # loss_epoch, accuracy_epoch = entropy_regularization(args, arr_query_loader, classifier,  optimizer)
+            # loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
             # print(
             #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
             # )
@@ -257,6 +258,15 @@ def worker(args, all_features):
             # print(
             #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
             # )
+        # ------------------------------------------------------------------------
+        # Entropy_regularization
+        # ------------------------------------------------------------------------
+        # for epoch in range(args.logistic_epochs):
+        #     loss_epoch, accuracy_epoch = regular(args, arr_query_loader, classifier,  optimizer)
+        #     print(
+        #         f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
+        #     )
+        #
         # ------------------------------------------------------------------------
         # Testing
         # ------------------------------------------------------------------------
@@ -286,9 +296,10 @@ if __name__ == "__main__":
     # ------------------------------------------------------------------------
     begin = time.time()
     dataset_list = [
-        #"mini-imagenet",
-         "FC100",
+        # "mini-imagenet",
+        # "FC100",
         # "tiered_imagenet",
+        "real_labeled",
     ]
     dataset_dict = {}
     for dataset_ins in dataset_list:
@@ -298,7 +309,7 @@ if __name__ == "__main__":
         dataset = FSDataset(
                 annotations_file = "{}.csv".format(args.dataset_name),
                 n_classes= args.n_classes,
-                transform=TransformsSimCLR(size=args.image_size).test_transform,
+                transform=TransformsSimCLR(size=args.image_size).train_transform,
                 target_transform=None
         )
         dataset_dict[args.dataset_name] = torch.utils.data.DataLoader(
@@ -314,15 +325,15 @@ if __name__ == "__main__":
     begin = time.time()
     model_list = [
         # arch       encoder        path
-        # ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
-       #  ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
-        #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
+        ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
+        # ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
+        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
         # ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
         # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
         # ["resnet", "resnet18",""],
-        ["resnet", "resnet50",""],
-        ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
-        ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
+        # ["resnet", "resnet50",""],
+        # ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
+        # ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
     ]
     model_dict = {}
     for model_ins in model_list:
@@ -397,10 +408,8 @@ if __name__ == "__main__":
             # ------------------------------------------------------------------------
             # M-way, N-shot
             # ------------------------------------------------------------------------
-            way_list = [
-                2, 5, 10, 20, 50,100]
-            shot_list = [
-                 1, 5, 10, 15, 20, 30, 50, 70, 100, 150]
+            way_list = [3]
+            shot_list = [1, 5, 10, 15, 20, 30, 50, 70, 100, 150, 200]
             for way_ins in way_list:
                 for shot_ins in shot_list:
                     args.way = way_ins
@@ -408,7 +417,7 @@ if __name__ == "__main__":
                     res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, all_features)
                 
     print("=> Begining write results ...")
-    with open('result.txt', 'w') as f:
+    with open('real_res.txt', 'w') as f:
         for dataset_ins in dataset_list:
             for model_ins in model_list:
                 for way_ins in way_list:
@@ -442,3 +451,4 @@ if __name__ == "__main__":
             plt.legend()
             plt.savefig(f".\\fig\\{dataset_ins}_{way_ins}way_nshot.jpg")
             plt.cla()
+

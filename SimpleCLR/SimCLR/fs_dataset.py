@@ -18,7 +18,7 @@ class FSDataset(Dataset):
 
     def __getitem__(self, idx):
         img_path = os.path.join(self.img_dir, self.img_labels.iloc[idx, 0])
-        image = read_image(img_path)
+        image = read_image(img_path) 
         label = self.img_labels.iloc[idx, 1]
         if self.transform:
             image = self.transform(image)

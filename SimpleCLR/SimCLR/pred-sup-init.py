@@ -2,11 +2,9 @@ from asyncio import all_tasks, as_completed
 import math
 import os
 import time
-import logging
 import argparse
 import random
 from os.path import join
-from concurrent.futures import ThreadPoolExecutor, wait
 import torch
 import torchvision
 import pandas as pd
@@ -17,17 +15,19 @@ from simclr import SimCLR
 
 from linear_classifier import LinearClassifier
 from simclr.modules.transformations import TransformsSimCLR
-from rich.progress import Progress, TextColumn, BarColumn, TimeElapsedColumn, TimeRemainingColumn
 
 from utils import yaml_config_hook
-from torch.utils.data import DataLoader
 from fs_dataset import FSDataset
 import torch.nn.functional as F
 import torchvision.models as torchvision_models
 import vits
 from simclr.modules.identity import Identity
 
-logging.basicConfig(level=logging.INFO)
+def entropy(p):
+    e = 0.0
+    for p_i in p:
+        e += p_i * math.log(p_i)
+    return -e
 
 def inference(loader, model, device):
     #print(f"=> Compute feature 0.00%. ", end='')
@@ -43,8 +43,8 @@ def inference(loader, model, device):
         feature_vector.extend(h.cpu().detach().numpy())
         labels_vector.extend(y.numpy())
 
-        #print(end='\r')
-        #print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
+        print(end='\r')
+        print(f"=> Compute feature {(100 * (step+1) / len(loader)):.2f}%. ", end='')
 
     feature_vector = np.array(feature_vector)
     labels_vector = np.array(labels_vector)
@@ -68,7 +68,40 @@ def create_data_loaders_from_arrays(X_train, y_train, X_test, y_test, batch_size
     )
     return train_loader, test_loader
 
-def train(args, loader, classifier, criterion, optimizer):
+def train(args, loader, classifier, criterion, optimizer, query_loader):
+    loss_epoch = 0
+    accuracy_epoch = 0
+
+    for step, (x, y) in enumerate(loader):
+        optimizer.zero_grad()
+
+        x = x.to(args.device)
+        y = y.to(args.device)
+
+        output = classifier(x)
+        loss = criterion(output, y)
+
+
+        loss_entropy = 0
+        for cnt, (x_q, y_q) in enumerate(query_loader):
+            if cnt > args.entropy_cnt:
+                break
+            X_q = X_q.to(args.device)
+            output_q = classifier(x_q)
+            loss_entropy += entropy(output_q)
+        loss_entropy /= args.entropy_cnt
+
+        acc = (output.argmax() == y.argmax()).sum().item() / y.size(0)
+        accuracy_epoch += acc
+
+        loss.backward()
+        optimizer.step()
+
+        loss_epoch += loss.item()
+
+    return loss_epoch/len(loader), accuracy_epoch/len(loader)
+
+def regularization(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
     accuracy_epoch = 0
     for step, (x, y) in enumerate(loader):
@@ -79,7 +112,7 @@ def train(args, loader, classifier, criterion, optimizer):
 
         output = classifier(x)
 
-        loss = criterion(output, y)
+        loss = 0.0001 * entropy(output[0])
         acc = (output.argmax() == y.argmax()).sum().item() / y.size(0)
         accuracy_epoch += acc
 
@@ -88,7 +121,7 @@ def train(args, loader, classifier, criterion, optimizer):
 
         loss_epoch += loss.item()
 
-    return loss_epoch, accuracy_epoch
+    return loss_epoch/len(loader), accuracy_epoch/len(loader)
 
 def test(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
@@ -108,38 +141,15 @@ def test(args, loader, classifier, criterion, optimizer):
 
         loss_epoch += loss.item()
 
-    return loss_epoch, accuracy_epoch
-
-def entropy_regularization(args, loader, classifier, optimizer):
-    def entropy(p):
-        e = 0.0
-        for p_i in p:
-            e += p_i * math.log(p_i)
-        return -e
-
-    loss_epoch = 0
-    accuracy_epoch = 0
-    for _, (x, y) in enumerate(loader):
-        optimizer.zero_grad()
-
-        x = x.to(args.device)
-        y = y.to(args.device)
-
-        output = classifier(x)
-
-        loss_epoch += entropy(output[0])
-
-        acc = (output.argmax() == y.argmax()).sum().item() / y.size(0)
-        accuracy_epoch += acc
-    loss_epoch /= len(loader)
-    loss_epoch.backward()
-    optimizer.step()
-
-    return loss_epoch, accuracy_epoch
+    return loss_epoch/len(loader), accuracy_epoch/len(loader)
 
 def generate_csv(dataset):
     dataset_path = join("..\\..\\dataset", dataset)
-    subfolders = ["train", "test", "val"]
+    subfolders = [
+        # "train",
+        #"test",
+        "val"
+        ]
     fn = []
     ln = []
     label_cnt = 0
@@ -153,31 +163,9 @@ def generate_csv(dataset):
                 fn.append(join(path, join(cls, img)))
                 ln.append(label_cnt)
             label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
-    return label_cnt
-
-def generate_csv_debug(dataset, subfolders):
-    dataset_path = join("..\\..\\dataset", dataset)
-    #
-    fn = []
-    ln = []
-    label_cnt = 0
-    for subfoler in subfolders:
-        path = join(dataset_path, subfoler)
-        classes = os.listdir(path)
-        for cls in classes:
-            cls_path = join(path, cls)
-            images = os.listdir(cls_path)
-            img_cnt = 0
-            for img in images:
-                if img_cnt >= 200:
-                    break
-                fn.append(join(path, join(cls, img)))
-                ln.append(label_cnt)
-                img_cnt += 1
-            label_cnt += 1
-    pd.DataFrame({ "path":fn, "label":ln}).to_csv(f"{dataset}-{time.time()}.csv", header=True, index=False)
-    return label_cnt
+    csv_fn = join(RESULT_FOLDER, f"{dataset}_{TIME_FN}.csv")
+    pd.DataFrame({ "path":fn, "label":ln}).to_csv(csv_fn, header=True, index=False)
+    return label_cnt, csv_fn
 
 def sample_from_loader(all_features, args):
     #
@@ -220,83 +208,159 @@ def sample_from_loader(all_features, args):
     )
     return arr_support_loader, arr_query_loader, sample_way
 
+
 def worker(args, all_features):
     begin = time.time()
     sample_acc = 0.0
-    for epi in range(0, args.sample_epoch):
+    for epi in range(0, 3):
         #
         arr_support_loader, arr_query_loader, sample_way = sample_from_loader(all_features, args)
-        mean_support_feature = torch.zeros(args.way, args.n_features)
-        for step, (x, y) in enumerate(arr_support_loader):
-            mean_support_feature[y.argmax()] += x[0]
-        n_shot = len(arr_support_loader) / args.way
-        mean_support_feature = F.normalize(mean_support_feature / n_shot)
+        if args.support_init:
+            mean_support_feature = torch.zeros(args.way, args.n_features)
+            for step, (x, y) in enumerate(arr_support_loader):
+                mean_support_feature[y.argmax()] += x[0]
+            n_shot = len(arr_support_loader) / args.way
+            mean_support_feature = F.normalize(mean_support_feature / n_shot)
+        else:
+            mean_support_feature = None
         #
         # ------------------------------------------------------------------------
-        # Define classifier
+        # Define classifier list
         # ------------------------------------------------------------------------
-        #
-        classifier = LinearClassifier(args.n_features, args.way,
-            weight=mean_support_feature, bias=torch.zeros(args.way))
-        #
-        classifier = classifier.to(args.device)
-        optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
-        criterion = torch.nn.CrossEntropyLoss()
-        #
-        # ------------------------------------------------------------------------
-        # Fine-tuning
-        # ------------------------------------------------------------------------
-        for epoch in range(args.logistic_epochs):
-            # loss_epoch, accuracy_epoch = entropy_regularization(args, arr_query_loader, classifier,  optimizer)
-            # print(
-            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-            # )
-            loss_epoch, accuracy_epoch = train(
-                args, arr_support_loader, classifier, criterion, optimizer
-            )
-            # print(
-            #     f"Epoch [{epoch}/{args.logistic_epochs}]\t Loss: {loss_epoch / len(arr_support_loader)}\t Accuracy: {accuracy_epoch / len(arr_support_loader)}"
-            # )
-        # ------------------------------------------------------------------------
-        # Testing
-        # ------------------------------------------------------------------------
-        loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
-        # print(
-        #     f"[FINAL]\t Loss: {loss_epoch / len(arr_query_loader)}\t Accuracy: {accuracy_epoch / len(arr_query_loader)}"
-        # )
-        sample_acc += accuracy_epoch / len(arr_query_loader)
+        classifier_list = []
+        entropy_cnt_list = [0, 1, 5, 10, 20, 50]
+        for i in range(len(entropy_cnt_list)):
+            classifier= LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
+            classifier = classifier.to(args.device)
+            optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
+            criterion = torch.nn.CrossEntropyLoss()
+            args.entropy_cnt = entropy_cnt_list[i]
+            # ------------------------------------------------------------------------
+            # Fine-tuning
+            # ------------------------------------------------------------------------
+            plot_x = [i for i in range(args.logistic_epochs)]
+            plot_acc_y = []
+            plot_loss_y = []
+            for epoch in range(args.logistic_epochs):
+                loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer, arr_query_loader)
+                plot_acc_y.append(accuracy_epoch)
+                plot_loss_y.append(loss_epoch)
+            # ------------------------------------------------------------------------
+            # Testing
+            # ------------------------------------------------------------------------
+            loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+            # ------------------------------------------------------------------------
+            # Save 
+            # ------------------------------------------------------------------------
+            tmp = {}
+            tmp["plot_x"] = plot_x
+            tmp["plot_acc_y"] = plot_acc_y
+            tmp["plot_loss_y"] = plot_loss_y
+            tmp["entropy_cnt"] = args.entropy_cnt
+            tmp["acc"] = accuracy_epoch
+            tmp["loss"] = loss_epoch
+
+            classifier_list.append(tmp)
+        
+        def plot_list(classifier_list, label='acc'):
+            import matplotlib.pyplot as plt
+            plt.title(f'{args.dataset_name} {args.encoder} {args.way}way-{args.shot}shot')
+            for i in range(len(entropy_cnt_list)):
+                x  = classifier_list[i]["ploy_x"]
+                y  = classifier_list[i][f"ploy_{label}_y"]
+                test_res = classifier_list[i][label]
+                entropy_cnt = classifier_list[i]["entropy_cnt"]
+
+                plt.plot(np.array(x), np.array(y), '^-', label=f"q={entropy_cnt}, test {label}={test_res:.4f})")
+                if label == 'acc':
+                    plt.ylim(0.0, 1.0)
+                plt.xlim(0, x[-1]+1)
+                plt.xlabel('epoch')
+                plt.ylabel(label)
+                plt.legend()
+                plt.savefig(join(RESULT_FOLDER, f"{args.way}way-{args.shot}shot_{label}_{epi}.jpg"))
+                plt.cla()
+        plot_list(classifier_list, "acc")
+        plot_list(classifier_list, "loss")
+        # # ------------------------------------------------------------------------
+        # # Define classifier
+        # # ------------------------------------------------------------------------
+        # classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
+        # #
+        # classifier = classifier.to(args.device)
+        # optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
+        # criterion = torch.nn.CrossEntropyLoss()
+        # # ------------------------------------------------------------------------
+        # # Fine-tuning
+        # # ------------------------------------------------------------------------
+        # for epoch in range(args.logistic_epochs):
+        #     args.entropy = True
+        #     loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
+        # # ------------------------------------------------------------------------
+        # # Testing
+        # # ------------------------------------------------------------------------
+        # loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+
+        sample_acc += classifier_list[3]["acc"]
+        #sample_acc += accuracy_epoch
     sample_acc /= args.sample_epoch
     end = time.time()
     print(f"{args.dataset_name} {args.arch} {args.encoder} {args.way}way {args.shot}shot {sample_acc:.6f} {end-begin:.2f}s")
     return sample_acc
-    #f"{args.dataset_name} {args.arch} {args.encoder} {args.way}way {args.shot}shot {sample_acc}"
 
-if __name__ == "__main__":
+if __name__ == "__main__" :
     parser = argparse.ArgumentParser(description="SimCLR")
-    config = yaml_config_hook("./config/pred.yaml")
+    config = yaml_config_hook(".\\config\\pred.yaml")
     for k, v in config.items():
         parser.add_argument(f"--{k}", default=v, type=type(v))
 
     args = parser.parse_args()
     args.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    args.logistic_batch_size = 1
+
+    # ------------------------------------------------------------------------
+    # record cfg
+    # ------------------------------------------------------------------------
+
+    dataset_list = [
+       #"mini-imagenet",
+        "FC100",
+        # "tiered_imagenet",
+    ]
+
+    model_list = [
+        # arch       encoder        path
+        # ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
+        ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
+        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
+        # ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
+        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
+        # ["resnet", "resnet18",""],
+        # ["resnet", "resnet50",""],
+        # ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
+        # ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
+    ]
+
+    way_list = [2, 5, 10]
+    shot_list = [
+        1, 5, 10, 15, 20, 30, 50,70,100]
+
+    # make dir
+    TIME_FN = f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}"
+    RESULT_FOLDER = join("result", f"{args.fn}_{TIME_FN}")
+    os.mkdir(RESULT_FOLDER)
+   
 
     # ------------------------------------------------------------------------
     # Loading data
     # ------------------------------------------------------------------------
     begin = time.time()
-    dataset_list = [
-        #"mini-imagenet",
-         "FC100",
-        # "tiered_imagenet",
-    ]
     dataset_dict = {}
     for dataset_ins in dataset_list:
         args.dataset_name = dataset_ins
-        args.n_classes = generate_csv(dataset=args.dataset_name)
+        args.n_classes, csv_fn = generate_csv(dataset=args.dataset_name)
         #
         dataset = FSDataset(
-                annotations_file = "{}.csv".format(args.dataset_name),
+                annotations_file = csv_fn,
                 n_classes= args.n_classes,
                 transform=TransformsSimCLR(size=args.image_size).test_transform,
                 target_transform=None
@@ -312,18 +376,6 @@ if __name__ == "__main__":
     # Loading model
     # ------------------------------------------------------------------------
     begin = time.time()
-    model_list = [
-        # arch       encoder        path
-        # ["mocov3", "vit_base", "..\\..\\moco-v3\\vit-b-300ep.pth.tar"],
-       #  ["mocov3", "vit_small", "..\\..\\moco-v3\\vit-s-300ep.pth.tar"],
-        #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-100ep.pth.tar"],
-        # ["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-300ep.pth.tar"],
-        # #["mocov3", "resnet50", "..\\..\\moco-v3\\r-50-1000ep.pth.tar"],
-        # ["resnet", "resnet18",""],
-        ["resnet", "resnet50",""],
-        ["simclr", "resnet18", "r-18-checkpoint_100.tar"],
-        ["simclr", "resnet50", "r-50-checkpoint_100.tar"],
-    ]
     model_dict = {}
     for model_ins in model_list:
         args.arch = model_ins[0]
@@ -376,6 +428,16 @@ if __name__ == "__main__":
     end = time.time()
     print(f"=> Loading models done. {end-begin:.2f}s")
 
+    with open(join(RESULT_FOLDER, "cfg"), 'w') as f:
+       f.write(f"dataset_list:{dataset_list}\n")
+       f.write(f"model_list:{model_list}\n")
+       f.write(f"way_list:{way_list}\n")
+       f.write(f"shot_list:{shot_list}\n\n")
+       
+       f.write("\nyaml:")
+       for k in args.__dict__:
+           f.write(f"{k}: {args.__dict__[k]}\n")
+
     res_dict = {}
     for dataset_ins in dataset_list:
         args.dataset_name = dataset_ins
@@ -394,13 +456,10 @@ if __name__ == "__main__":
             # ------------------------------------------------------------------------
             X, y = inference(dataloader, model, args.device)
             all_features = (X, y)
+            print("feature compute done.")
             # ------------------------------------------------------------------------
             # M-way, N-shot
             # ------------------------------------------------------------------------
-            way_list = [
-                2, 5, 10, 20, 50,100]
-            shot_list = [
-                 1, 5, 10, 15, 20, 30, 50, 70, 100, 150]
             for way_ins in way_list:
                 for shot_ins in shot_list:
                     args.way = way_ins
@@ -408,7 +467,7 @@ if __name__ == "__main__":
                     res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, all_features)
                 
     print("=> Begining write results ...")
-    with open('result.txt', 'w') as f:
+    with open(join(RESULT_FOLDER, f"{TIME_FN}.txt"), 'w') as f:
         for dataset_ins in dataset_list:
             for model_ins in model_list:
                 for way_ins in way_list:
@@ -440,5 +499,8 @@ if __name__ == "__main__":
             plt.xlabel('shot')
             plt.ylabel('accuracy')
             plt.legend()
-            plt.savefig(f".\\fig\\{dataset_ins}_{way_ins}way_nshot.jpg")
+            plt.savefig(join(RESULT_FOLDER, f"{dataset_ins}_{way_ins}way_nshot_randInit_{TIME_FN}.jpg"))
             plt.cla()
+
+    with open(join(RESULT_FOLDER, "Done"), 'w') as f:
+        pass
