@@ -145,8 +145,13 @@ FSL-Mate
 SimpleCLR/SimpleCLR/datasets
 
 *.tar
-cmd.txt
+*.csv
+*.txt
 cifar_net.pth
-SimpleCLR/SimCLR/mini-imagenet-query.csv
-SimpleCLR/SimCLR/mini-imagenet-support.csv
-SimpleCLR/SimCLR/result.txt
+*.png
+*.jpg
+cfg
+done
+dataset.md
+Opening.md
+survey.md
