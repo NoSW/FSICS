@@ -16,7 +16,7 @@ class SimCLR(nn.Module):
         self.encoder = encoder
         self.n_features = n_features
 
-        # Replace the fc layer with an Identity function
+        # Replace the fc layer with an Identity function, (already done in pred.py)
         # self.encoder.fc = Identity()
 
         # We use a MLP with one hidden layer to obtain z_i = g(h_i) = W(2)σ(W(1)h_i) where σ is a ReLU non-linearity.
