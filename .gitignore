@@ -2,13 +2,14 @@ __pycache__
 .vscode
 MD
 trash
-result/
-checkpoint/
-feature/
-csv/
-
-dataset
 moco-v3
+
+/result/
+/checkpoint/
+/feature/
+/csv/
+/dataset/
+
 
 *.tar
 *.log
