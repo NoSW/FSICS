@@ -19,3 +19,4 @@ dataset/*
 *.jpg
 *.md
 !README.md
+!.gitkeep
