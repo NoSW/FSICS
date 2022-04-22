@@ -12,6 +12,9 @@ import matplotlib.pyplot as plt
 from linear_classifier import LinearClassifier
 from utils import yaml_config_hook
 
+RESULT_FOLDER = ""
+plt.style.use('science')
+
 def train(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
     accuracy_epoch = 0
@@ -119,6 +122,13 @@ def sample_from_loader(X, args):
     )
     return arr_support_loader, arr_query_loader
 
+def get_mean_support_feature(args, arr_support_loader):
+    mean_support_feature = torch.zeros(args.way, args.n_features)
+    for step, (x, y) in enumerate(arr_support_loader):
+        mean_support_feature[y.argmax()] += x[0]
+    mean_support_feature = F.normalize(mean_support_feature / args.shot)
+    return mean_support_feature
+
 def plot_list(args, classifier_list, label, save_as):
     print(f"ploting {args.way} {args.shot} {len(classifier_list)}")
     plt.title(f'{args.dataset} {args.encoder} {args.way}way-{args.shot}shot')
@@ -137,30 +147,13 @@ def plot_list(args, classifier_list, label, save_as):
     plt.savefig(save_as)
     plt.cla()
 
-def worker(args, X):
-    begin = time.time()
-    sample_acc = 0.0
-    for epi in range(args.sample_epoch):
-        # ------------------------------------------------------------------------
-        # Sample way-shot randomly
-        # ------------------------------------------------------------------------
-        arr_support_loader, arr_query_loader = sample_from_loader(X, args)
-        # ------------------------------------------------------------------------
-        # Support based init
-        # ------------------------------------------------------------------------
-        if args.support_init_enabled:
-            mean_support_feature = torch.zeros(args.way, args.n_features)
-            for step, (x, y) in enumerate(arr_support_loader):
-                mean_support_feature[y.argmax()] += x[0]
-            mean_support_feature = F.normalize(mean_support_feature / args.shot)
-        else:
-            mean_support_feature = None
-        # ------------------------------------------------------------------------
+def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_support_feature,epi ):
+    # ------------------------------------------------------------------------
         # Define classifier list
         # ------------------------------------------------------------------------
-        entropy_corr_list = [10, 1, 1e-3, 1e-6, 1e-9, 1e-12, 1e-15, 1e-18]
+        entropy_corr_list = [1000, 100, 10, 1, 1e-30, 1e-80, 1e-160, 1e-240, 1e-320, 1e-400, 1e-70]
         classifier_list = []
-        entropy_corr_idx = 4
+        entropy_corr_idx = entropy_corr_list.index(1e-30)
         entropy_list = []
         becoming_big = True
         for i in range(args.entropy_corr_epoch):
@@ -208,32 +201,38 @@ def worker(args, X):
                 if  classifier_list[i]['acc'] < max(0, classifier_list[i-1]['acc'] - 0.02):
                     becoming_big = not becoming_big
                 while entropy_corr_idx in entropy_list:
-                    entropy_corr_idx += (1 if becoming_big else -1)
+                    entropy_corr_idx += (-1 if becoming_big else 1)
             print(f"i={i} {args.way} {args.shot} {entropy_corr_list[entropy_corr_idx ]}(next) {time.time()-begin:.4f}s")   
-        sample_acc += max([classifier_list[a]['acc'] for a in range(args.entropy_corr_epoch)])
         # ------------------------------------------------------------------------
         # Ploting
         # ------------------------------------------------------------------------
         for label in ['acc', 'loss']:
             plot_list(args, classifier_list, label,
                 save_as=join(RESULT_FOLDER, f"{args.way}way-{args.shot}shot_{label}_{epi}.jpg"))
-        # # ------------------------------------------------------------------------
-        # # Define classifier
-        # # ------------------------------------------------------------------------
-        # classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
-        # classifier = classifier.to(args.device)
-        # optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
-        # criterion = torch.nn.CrossEntropyLoss()
-        # # ------------------------------------------------------------------------
-        # # Fine-tuning
-        # # ------------------------------------------------------------------------
-        # for epoch in range(args.logistic_epochs):
-        #     loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
-        # # ------------------------------------------------------------------------
-        # # Testing
-        # # ------------------------------------------------------------------------
-        # loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
-        # sample_acc += accuracy_epoch
+
+        return max([classifier_list[a]['acc'] for a in range(args.entropy_corr_epoch)])
+
+def instance(args, arr_support_loader, arr_query_loader, mean_support_feature):
+    classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
+    classifier = classifier.to(args.device)
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
+    criterion = torch.nn.CrossEntropyLoss()
+
+    for epoch in range(args.logistic_epochs):
+        loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
+        if args.entropy_enabled:
+            loss_epoch_r, accuracy_epoch_r = regularization(args, arr_query_loader, classifier, optimizer, args.entropy_corr)
+    loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+    return accuracy_epoch
+
+def worker(args, X):
+    begin = time.time()
+    sample_acc = 0.0
+    for epi in range(args.sample_epoch):
+        arr_support_loader, arr_query_loader = sample_from_loader(X, args)
+        mean_support_feature = get_mean_support_feature(args, arr_support_loader) \
+            if args.support_init_enabled else None
+        sample_acc += entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_support_feature, epi)
 
     sample_acc /= args.sample_epoch
     print(f"{args.dataset} {args.arch} {args.encoder} {args.way}way {args.shot}shot {sample_acc:.6f} {time.time()-begin:.2f}s")
@@ -269,11 +268,11 @@ if __name__ == "__main__" :
     ]
     way_shot_dict ={
         # way [shot0, shot1, ...]
-        2: [1, ],#5, 10, 20, 50],
-       # 5: [1, 5,10, 20, 50],
-        # 10: [1, 5, 10, 20, 50],
-        # 50: [1, 5, 10, 20, 50, 100],
-        # 100: [1, 5, 10, 20, 50, 100],
+        2: [1, 5, 10, 20, 50],
+        5: [5],#[1, 5,10, 20, 50],
+        10: [1, 5, 10, 20, 50],
+        50: [1, 5, 10, 20, 50, 100],
+        100: [1, 5, 10, 20, 50, 100],
     }
     # ------------------------------------------------------------------------
     # Make dir
@@ -294,7 +293,7 @@ if __name__ == "__main__" :
             if k != 'desc':
                 f.write(f"{k}: {args.__dict__[k]}\n")
     # ------------------------------------------------------------------------
-    # Run DxExMxN iters
+    # Run DxExN iters
     # ------------------------------------------------------------------------
     res_dict = {}
     for dataset_ins in dataset_list:
@@ -311,11 +310,9 @@ if __name__ == "__main__" :
             # ------------------------------------------------------------------------
             # M-way, N-shot
             # ------------------------------------------------------------------------
-            for way_ins in way_shot_dict:
-                for shot_ins in way_shot_dict[way_ins]:
-                    args.way = way_ins
-                    args.shot = shot_ins
-                    res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"]= worker(args, X)
+            for shot_ins in way_shot_dict[args.way]:
+                args.shot = shot_ins
+                res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{args.way}way-{shot_ins}shot"]= worker(args, X)
     # ------------------------------------------------------------------------
     # Writing result
     # ------------------------------------------------------------------------           
@@ -323,37 +320,6 @@ if __name__ == "__main__" :
     with open(join(RESULT_FOLDER, f"a-result-{TIME_FN}.txt"), 'w') as f:
         for dataset_ins in dataset_list:
             for model_ins in model_list:
-                for way_ins in way_shot_dict:
-                    for shot_ins in way_shot_dict[way_ins]:
-                        key = f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"
-                        f.write(f"{key} {res_dict[key]}\n")
-    # ------------------------------------------------------------------------
-    # Ploting result
-    # ------------------------------------------------------------------------ 
-    for dataset_ins in dataset_list:
-        for model_ins in model_list:
-            for way_ins in way_shot_dict:
-                res_dict[f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-0shot"] = 1.0/way_ins
-
-    for dataset_ins in dataset_list:
-        for way_ins in way_shot_dict:
-            for model_ins in model_list:
-                y = []
-                for shot_ins in way_shot_dict[way_ins]:
-                    key = f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{way_ins}way-{shot_ins}shot"
-                    y.append(res_dict[key])
-                y = np.array(y)
-                plt.plot(np.array(way_shot_dict[way_ins]), y, '^-', label=f"{model_ins[0]}-{model_ins[1]}")
-            plt.title(f'{way_ins}-way,n-shot ({dataset_ins})')
-            plt.ylim(0.0, 1.0)
-            plt.xlim(0, way_shot_dict[way_ins][-1]+1)
-            plt.xlabel('shot')
-            plt.ylabel('accuracy')
-            plt.legend()
-            plt.savefig(join(RESULT_FOLDER, f"{dataset_ins}_{way_ins}way_nshot_randInit_{TIME_FN}.jpg"))
-            plt.cla()
-    # ------------------------------------------------------------------------
-    # Done
-    # ------------------------------------------------------------------------ 
-    with open(join(RESULT_FOLDER, "aDone"), 'w') as f:
-        pass
+                for shot_ins in way_shot_dict[args.way]:
+                    key = f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}-{args.way}way-{shot_ins}shot"
+                    f.write(f"{key} {res_dict[key]}\n")
