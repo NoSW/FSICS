@@ -4,11 +4,11 @@ MD
 trash
 moco-v3
 
-/result/
-/checkpoint/
-/feature/
-/csv/
-/dataset/
+result/*
+checkpoint/*
+feature/*
+csv/*
+dataset/*
 
 
 *.tar
