@@ -1,7 +1,5 @@
 # fixed parapmeter
 optimizer: "Adam"
-logistic_epochs: 50
-plot_sample_rate: 3 # sample 1 point per 3 points
 n_classes: 100
 sample_per_class: 600
 logistic_batch_size: 1
@@ -11,12 +9,13 @@ desc: ""
 # tricks
 support_init_enabled: True
 
+sample_epoch: 1
+logistic_epochs: 1500
+plot_sample_rate: 50 # sample 1 point per 50 points
+way: 2
+
 # entropy regularization
 entropy_enabled: True
 entropy_corr: 1.0e-8
-
-way: 2
-
-sample_epoch: 1
 # flolling settings are used only for trials
 entropy_corr_epoch: 6

@@ -3,6 +3,7 @@ __pycache__
 MD
 trash
 moco-v3
+data
 
 result/*
 checkpoint/*
@@ -18,5 +19,8 @@ dataset/*
 *.png
 *.jpg
 *.md
+*.ipynb
+
+!cifar10_tutorial.ipynb
 !README.md
 !.gitkeep

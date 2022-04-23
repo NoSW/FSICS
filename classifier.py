@@ -3,6 +3,7 @@ import os
 import time
 import argparse
 import random
+import json
 from os.path import join
 import torch
 import numpy as np
@@ -13,7 +14,7 @@ from linear_classifier import LinearClassifier
 from utils import yaml_config_hook
 
 RESULT_FOLDER = ""
-plt.style.use('science')
+plt.style.use(['science', 'grid','notebook','no-latex'])
 
 def train(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
@@ -37,8 +38,7 @@ def train(args, loader, classifier, criterion, optimizer):
 
     return loss_epoch/len(loader), accuracy_epoch/len(loader)
 
-def regularization(args, loader, classifier, optimizer, corr):
-
+def regularization(args, loader, classifier, optimizer):
     def entropy(output):
         res = 0
         for p in output:
@@ -48,26 +48,22 @@ def regularization(args, loader, classifier, optimizer, corr):
             res += -e
         return res / output.shape[0]
 
-    loss_epoch = 0
-    accuracy_epoch = 0
-    for step, (x, y) in enumerate(loader):
-        optimizer.zero_grad()
-
+    loss = 0
+    optimizer.zero_grad()
+    for _, (x, y) in enumerate(loader):
         x = x.to(args.device)
-        y = y.to(args.device)
-
         output = classifier(x)
+        loss += entropy(output)
+    loss /= len(loader)
+    loss.backward()
+    optimizer.step()
 
-        loss = corr * entropy(output)
-        acc = (output.argmax(1) == y.argmax(1)).sum().item() / y.size(0)
-        accuracy_epoch += acc
-
+def zero_loss(args, classifier, optimizer):
+    for _ in range(300):
+        optimizer.zero_grad()
+        loss = classifier(torch.Tensor([[0.1]*args.n_features]).to(args.device))[0][0] * 0
         loss.backward()
         optimizer.step()
-
-        loss_epoch += loss.item()
-
-    return loss_epoch/len(loader), accuracy_epoch/len(loader)
 
 def test(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
@@ -137,10 +133,9 @@ def plot_list(args, classifier_list, label, save_as):
         y  = classifier_list[i][f"plot_{label}_y"]
         test_res = classifier_list[i][label]
         entropy_corr = classifier_list[i]["entropy_corr"]
-        plt.plot(np.array(x), np.array(y), '^-', label=f"corr={entropy_corr:.1e}, test_{label}={test_res:.4f})")
+        plt.plot(np.array(x), np.array(y), '^-', label=f"{entropy_corr:.0e}, {label}={test_res:.4f})")
     if label == 'acc':
         plt.ylim(0.0, 1.0)
-    plt.xlim(0, x[-1]+1)
     plt.xlabel('epoch')
     plt.ylabel(label)
     plt.legend()
@@ -151,9 +146,9 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
     # ------------------------------------------------------------------------
         # Define classifier list
         # ------------------------------------------------------------------------
-        entropy_corr_list = [1000, 100, 10, 1, 1e-30, 1e-80, 1e-160, 1e-240, 1e-320, 1e-400, 1e-70]
+        entropy_corr_list = [1000, 100, 10, 1, 1e-10, 1e-50, 1e-100,0, 1e-10000000, 1e-1000000000, 1e-400, 1e-70]
         classifier_list = []
-        entropy_corr_idx = entropy_corr_list.index(1e-30)
+        entropy_corr_idx = entropy_corr_list.index(1e-50)
         entropy_list = []
         becoming_big = True
         for i in range(args.entropy_corr_epoch):
@@ -162,7 +157,7 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
             classifier = classifier.to(args.device)
             optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
             criterion = torch.nn.CrossEntropyLoss()
-            args.entropy_corr = entropy_corr_list[entropy_corr_idx ] if i > 0 else 0
+            args.entropy_corr = entropy_corr_list[entropy_corr_idx ] if i < args.entropy_corr_epoch - 1 else 0
             entropy_list.append(entropy_corr_idx)
             print(f"i={i} {args.way} {args.shot} {args.entropy_corr}", end ='\r')
             # ------------------------------------------------------------------------
@@ -171,10 +166,10 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
             plot_x = []
             plot_acc_y = []
             plot_loss_y = []
-            for epoch in range(args.logistic_epochs):
+            for epoch in range(args.logistic_epochs*20):
                 loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
-                if i > 0:
-                    loss_epoch_r, accuracy_epoch_r = regularization(args, arr_query_loader, classifier, optimizer, args.entropy_corr)
+                if i < args.entropy_corr_epoch - 1:
+                   loss_epoch_r, accuracy_epoch_r = regularization(args, arr_query_loader, classifier, optimizer)
                 if epoch % args.plot_sample_rate == 0:
                     plot_x.append(epoch)
                     plot_acc_y.append(accuracy_epoch)
@@ -197,7 +192,7 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
             # ------------------------------------------------------------------------
             # Adjust entropy corr
             # ------------------------------------------------------------------------
-            if i > 0:
+            if i < args.entropy_corr_epoch - 2:
                 if  classifier_list[i]['acc'] < max(0, classifier_list[i-1]['acc'] - 0.02):
                     becoming_big = not becoming_big
                 while entropy_corr_idx in entropy_list:
@@ -211,6 +206,63 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
                 save_as=join(RESULT_FOLDER, f"{args.way}way-{args.shot}shot_{label}_{epi}.jpg"))
 
         return max([classifier_list[a]['acc'] for a in range(args.entropy_corr_epoch)])
+
+def extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature,zero=False):
+    classifier= LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
+    classifier = classifier.to(args.device)
+    optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
+    criterion = torch.nn.CrossEntropyLoss()
+    plot_x = []
+    plot_acc_y = []
+    plot_loss_y = []
+    for epoch in range(args.logistic_epochs):
+        loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
+        if zero:
+            # zero_loss(args, classifier, optimizer)
+            regularization(args,arr_query_loader, classifier, optimizer)
+
+        if epoch % args.plot_sample_rate == 0:
+            plot_x.append(epoch)
+            plot_acc_y.append(accuracy_epoch)
+            plot_loss_y.append(loss_epoch)
+    loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+
+    return plot_x, plot_acc_y, plot_loss_y, accuracy_epoch, loss_epoch
+
+def two_com(args, arr_support_loader, arr_query_loader, mean_support_feature):
+    x, acc_wo, loss_wo, acc_wo_t, loss_wo_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero=False)
+    x, acc_w, loss_w, acc_w_t, loss_w_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero=True)
+
+    def plot_two_sum(args, x, y_w, y_wo,  t_w, t_wo, la):
+        plt.plot(np.array(x), np.array(y_wo), '^-', label=f"w/o {la}={t_wo:.4f})")
+        plt.plot(np.array(x), np.array(y_w), '^-', label=f"w {la}={t_w:.4f})")
+        plt.title(f'{args.dataset} {args.encoder} {args.way}way-{args.shot}shot')
+        if la == 'acc':
+            plt.ylim(0.0, 1.0)
+        plt.xlabel('epoch')
+        plt.ylabel(la)
+        plt.legend()
+        plt.savefig(join(RESULT_FOLDER, f"{args.dataset} {args.encoder} {args.way}way-{args.shot}shot_{la}.png"))
+        plt.cla()
+
+    fn = join(RESULT_FOLDER, f"{args.dataset}-{args.encoder}-{args.way}way-{args.shot}shot.json")
+    with open(fn, 'w') as f:
+            json.dump({
+                'x': x,
+                "acc_w": acc_w,
+                "acc_wo": acc_wo,
+                "acc_w_t": acc_w_t,
+                "acc_wo_t": acc_wo_t,
+                "loss_w": loss_w,
+                "loss_wo": loss_wo,
+                "loss_w_t": loss_w_t,
+                "loss_wo_t": loss_wo_t,
+            },f)
+
+    plot_two_sum(args, x, acc_w, acc_wo, acc_w_t, acc_wo_t, 'acc')
+    plot_two_sum(args, x, loss_w, loss_wo, loss_w_t, loss_wo_t, 'loss')
+
+    return acc_w_t
 
 def instance(args, arr_support_loader, arr_query_loader, mean_support_feature):
     classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
@@ -232,7 +284,7 @@ def worker(args, X):
         arr_support_loader, arr_query_loader = sample_from_loader(X, args)
         mean_support_feature = get_mean_support_feature(args, arr_support_loader) \
             if args.support_init_enabled else None
-        sample_acc += entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_support_feature, epi)
+        sample_acc += two_com(args, arr_support_loader, arr_query_loader, mean_support_feature)
 
     sample_acc /= args.sample_epoch
     print(f"{args.dataset} {args.arch} {args.encoder} {args.way}way {args.shot}shot {sample_acc:.6f} {time.time()-begin:.2f}s")
@@ -268,16 +320,16 @@ if __name__ == "__main__" :
     ]
     way_shot_dict ={
         # way [shot0, shot1, ...]
-        2: [1, 5, 10, 20, 50],
-        5: [5],#[1, 5,10, 20, 50],
-        10: [1, 5, 10, 20, 50],
-        50: [1, 5, 10, 20, 50, 100],
-        100: [1, 5, 10, 20, 50, 100],
+        2: [1, 5, 10, 20],
+        5: [1, 5, 10, 20],
+        10: [1, 5, 10, 20],
+        50: [1, 5, 10, 20, 50],
+        100: [1, 5, 10, 20, 50],
     }
     # ------------------------------------------------------------------------
     # Make dir
     # ------------------------------------------------------------------------
-    TIME_FN = f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}"
+    TIME_FN = f"{time.strftime('%Y-%m-%d-%H-%M-%S', time.localtime())}-{random.randint(0,10000)}"
     RESULT_FOLDER = join("result", f"{args.fn}_{TIME_FN}")
     os.mkdir(RESULT_FOLDER)
     with open(join(RESULT_FOLDER, "acfg"), 'w') as f:

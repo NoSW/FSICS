@@ -21,5 +21,6 @@ class LinearClassifier(nn.Module):
         # x =  F.normalize(x)
         # self.model.weight = nn.Parameter(F.normalize(self.model.weight))
         x = self.model(x) 
-        return self.softmax(x)
+        x = self.softmax(x)
+        return x
 
