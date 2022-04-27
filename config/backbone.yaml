@@ -1,0 +1,12 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 100
+sample_per_class: 600
+logistic_batch_size: 1
+fn: "BACKBONE"
+desc: ""
+
+sample_epoch: 10
+logistic_epochs: 1000
+plot_sample_rate: 50 # sample 1 point per 50 points
+way: 2

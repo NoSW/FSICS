@@ -1,0 +1,14 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 100
+sample_per_class: 600
+logistic_batch_size: 1
+fn: "MULTI"
+desc: ""
+
+# tricks
+support_init_enabled: True
+
+sample_epoch: 1
+logistic_epochs: 500
+way: 20

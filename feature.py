@@ -36,9 +36,8 @@ def inference(loader, model, device):
     print(f"{(end-begin)/60:.2f}min")
     return feature_vector, labels_vector
 
-def generate_csv(dataset):
+def generate_csv(dataset, subfolders = ["train", "test", "val"]):
     dataset_path = join("dataset", dataset)
-    subfolders = ["train", "test", "val"]
     fn = []
     ln = []
     label_cnt = 0
@@ -58,20 +57,19 @@ def generate_csv(dataset):
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     image_size = 224
-    batch_size = 1
+    batch_size = 128
     workers = 8
 
     dataset_list = [
-        "mini-imagenet",
-         "FC100",
-        # "tiered_imagenet",
+       # "mini-imagenet",
+        "FC100",
     ]
     model_list = [
         # arch       encoder        path
-         ["mocov3", "vit_base", "checkpoint\\vit-b-300ep.pth.tar"],
-       # ["mocov3", "vit_small", "checkpoint\\vit-s-300ep.pth.tar"],
+        # ["mocov3", "vit_base", "checkpoint\\vit-b-300ep.pth.tar"],
+      #  ["mocov3", "vit_small", "checkpoint\\vit-s-300ep.pth.tar"],
         #["mocov3", "resnet50", "checkpoint\\r-50-100ep.pth.tar"],
-        # ["mocov3", "resnet50", "checkpoint\\r-50-300ep.pth.tar"],
+         ["mocov3", "resnet50", "checkpoint\\r-50-300ep.pth.tar"],
         # #["mocov3", "resnet50", "checkpoint\\r-50-1000ep.pth.tar"],
         # ["resnet", "resnet18",""],
         # ["resnet", "resnet50",""],
@@ -82,8 +80,8 @@ if __name__ == "__main__":
     begin = time.time()
     dataset_dict = {}
     for dataset_ins in dataset_list:
-
-        n_classes = generate_csv(dataset=dataset_ins)
+    
+        n_classes = generate_csv(dataset=dataset_ins , subfolders=['all'])
         #
         dataset = FSDataset(
                 annotations_file = join("csv", f"{dataset_ins}.csv"),
@@ -161,7 +159,4 @@ if __name__ == "__main__":
             # ------------------------------------------------------------------------
             X, y = inference(dataloader, model, device)
             np.save(join("feature", f"{dataset_ins}-{model_ins[0]}-{model_ins[1]}.npy"), X)
-        # unused, we will read orderd data sequentially for each class
-        #np.save(join("feature", f"{dataset_ins}.npy"), y)
-
     

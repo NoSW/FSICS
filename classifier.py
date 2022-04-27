@@ -16,6 +16,23 @@ from utils import yaml_config_hook
 RESULT_FOLDER = ""
 plt.style.use(['science', 'grid','notebook','no-latex'])
 
+def mixup(args, loader, classifier, criterion, optimizer):
+    for step1, (x1, y1) in enumerate(loader):
+        x1 = x1.to(args.device)
+        y1 = y1.to(args.device)
+        for step2, (x2, y2) in enumerate(loader):
+            x2 = x2.to(args.device)
+            y2 = y2.to(args.device)
+            if y1.argmax(1) != y2.argmax(1):
+                lam = np.random.beta(0.3, 0.3)
+                x = lam * x1 + (1 - lam) * x2
+                y = lam * y1 + (1 - lam) * y2
+                optimizer.zero_grad()
+                output = classifier(x)
+                loss = criterion(output, y)
+                loss.backward()
+                optimizer.step()
+
 def train(args, loader, classifier, criterion, optimizer):
     loss_epoch = 0
     accuracy_epoch = 0
@@ -96,7 +113,7 @@ def sample_from_loader(X, args):
         tmp_label = [0.0] * args.way
         tmp_label[sample_way.index(way_ins)] = 1.0
         for shot_ins in range(args.sample_per_class):
-            if shot_ins > args.shot:
+            if shot_ins >= args.shot:
                 query_X_list.append(X[way_ins * args.sample_per_class + shot_ins])
                 query_y_list.append(tmp_label)
             else:
@@ -207,7 +224,7 @@ def entropy_corr_probing(args, arr_support_loader, arr_query_loader, mean_suppor
 
         return max([classifier_list[a]['acc'] for a in range(args.entropy_corr_epoch)])
 
-def extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature,zero=False):
+def extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature,zero_enabled=False, mixup_enabled=False):
     classifier= LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
     classifier = classifier.to(args.device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
@@ -217,9 +234,11 @@ def extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature,
     plot_loss_y = []
     for epoch in range(args.logistic_epochs):
         loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
-        if zero:
-            # zero_loss(args, classifier, optimizer)
-            regularization(args,arr_query_loader, classifier, optimizer)
+        if zero_enabled:
+            zero_loss(args, classifier, optimizer)
+            #regularization(args,arr_query_loader, classifier, optimizer)
+        if mixup_enabled:
+            mixup(args, arr_support_loader, classifier, criterion, optimizer)
 
         if epoch % args.plot_sample_rate == 0:
             plot_x.append(epoch)
@@ -229,42 +248,40 @@ def extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature,
 
     return plot_x, plot_acc_y, plot_loss_y, accuracy_epoch, loss_epoch
 
-def two_com(args, arr_support_loader, arr_query_loader, mean_support_feature):
-    x, acc_wo, loss_wo, acc_wo_t, loss_wo_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero=False)
-    x, acc_w, loss_w, acc_w_t, loss_w_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero=True)
+def two_com(args, arr_support_loader, arr_query_loader, mean_support_feature, epi):
+    x, acc_mixup, loss_mixup, acc_mixup_t, loss_mixup_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero_enabled=False, mixup_enabled=True)
+    x, acc_blank, loss_blank, acc_blank_t, loss_blank_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero_enabled=False, mixup_enabled=False)
+    x, acc_zero, loss_zero, acc_zero_t, loss_zero_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero_enabled=True, mixup_enabled=False)
+    x, acc_both, loss_both, acc_both_t, loss_both_t = extra_loss(args, arr_support_loader, arr_query_loader, mean_support_feature, zero_enabled=True, mixup_enabled=True)
 
-    def plot_two_sum(args, x, y_w, y_wo,  t_w, t_wo, la):
-        plt.plot(np.array(x), np.array(y_wo), '^-', label=f"w/o {la}={t_wo:.4f})")
-        plt.plot(np.array(x), np.array(y_w), '^-', label=f"w {la}={t_w:.4f})")
+    def plot_two_sum(args, d, line, la):
+        for l in line:
+            t = d[f"{la}_{l}_t"]
+            plt.plot(np.array(d['x']), np.array(d[f"{la}_{l}"]), '^-', label=f"{l} {la}={t:.4f})")
         plt.title(f'{args.dataset} {args.encoder} {args.way}way-{args.shot}shot')
-        if la == 'acc':
-            plt.ylim(0.0, 1.0)
         plt.xlabel('epoch')
         plt.ylabel(la)
         plt.legend()
-        plt.savefig(join(RESULT_FOLDER, f"{args.dataset} {args.encoder} {args.way}way-{args.shot}shot_{la}.png"))
+        plt.savefig(join(RESULT_FOLDER, f"{args.dataset} {args.encoder} {args.way}way-{args.shot}shot_{la}-{epi}.png"))
         plt.cla()
 
-    fn = join(RESULT_FOLDER, f"{args.dataset}-{args.encoder}-{args.way}way-{args.shot}shot.json")
+    fn = join(RESULT_FOLDER, f"{args.dataset}-{args.encoder}-{args.way}way-{args.shot}shot-{epi}.json")
+    res_dict = {
+        'x': x ,
+        "acc_blank": acc_blank, "acc_blank_t": acc_blank_t, "loss_blank": loss_blank, "loss_blank_t": loss_blank_t,
+        "acc_zero": acc_zero, "acc_zero_t": acc_zero_t, "loss_zero": loss_zero, "loss_zero_t": loss_zero_t,
+        "acc_mixup": acc_mixup, "acc_mixup_t": acc_mixup_t, "loss_mixup": loss_mixup, "loss_mixup_t": loss_mixup_t,
+        "acc_both": acc_both, "acc_both_t": acc_both_t, "loss_both": loss_both, "loss_both_t": loss_both_t,
+    }
     with open(fn, 'w') as f:
-            json.dump({
-                'x': x,
-                "acc_w": acc_w,
-                "acc_wo": acc_wo,
-                "acc_w_t": acc_w_t,
-                "acc_wo_t": acc_wo_t,
-                "loss_w": loss_w,
-                "loss_wo": loss_wo,
-                "loss_w_t": loss_w_t,
-                "loss_wo_t": loss_wo_t,
-            },f)
+            json.dump(res_dict,f)
 
-    plot_two_sum(args, x, acc_w, acc_wo, acc_w_t, acc_wo_t, 'acc')
-    plot_two_sum(args, x, loss_w, loss_wo, loss_w_t, loss_wo_t, 'loss')
+    plot_two_sum(args, res_dict, ["blank", "zero", "mixup", "both"], 'acc')
+    plot_two_sum(args, res_dict, ["blank", "zero", "mixup", "both"], 'loss')
 
-    return acc_w_t
+    return acc_blank_t
 
-def instance(args, arr_support_loader, arr_query_loader, mean_support_feature):
+def instance(args, arr_support_loader, arr_query_loader, mean_support_feature, epi):
     classifier = LinearClassifier(args.n_features, args.way, weight=mean_support_feature)
     classifier = classifier.to(args.device)
     optimizer = torch.optim.Adam(classifier.parameters(), lr=3e-4)
@@ -273,8 +290,9 @@ def instance(args, arr_support_loader, arr_query_loader, mean_support_feature):
     for epoch in range(args.logistic_epochs):
         loss_epoch, accuracy_epoch = train(args, arr_support_loader, classifier, criterion, optimizer)
         if args.entropy_enabled:
-            loss_epoch_r, accuracy_epoch_r = regularization(args, arr_query_loader, classifier, optimizer, args.entropy_corr)
+            loss_epoch_r, accuracy_epoch_r = regularization(args, arr_query_loader, classifier, optimizer)
     loss_epoch, accuracy_epoch = test(args, arr_query_loader, classifier, criterion, optimizer)
+    
     return accuracy_epoch
 
 def worker(args, X):
@@ -284,8 +302,8 @@ def worker(args, X):
         arr_support_loader, arr_query_loader = sample_from_loader(X, args)
         mean_support_feature = get_mean_support_feature(args, arr_support_loader) \
             if args.support_init_enabled else None
-        sample_acc += two_com(args, arr_support_loader, arr_query_loader, mean_support_feature)
-
+        #sample_acc += two_com(args, arr_support_loader, arr_query_loader, mean_support_feature, epi)
+        sample_acc += instance(args, arr_support_loader, arr_query_loader, mean_support_feature, epi)
     sample_acc /= args.sample_epoch
     print(f"{args.dataset} {args.arch} {args.encoder} {args.way}way {args.shot}shot {sample_acc:.6f} {time.time()-begin:.2f}s")
     return sample_acc
@@ -304,7 +322,7 @@ if __name__ == "__main__" :
     # Setting
     # ------------------------------------------------------------------------
     dataset_list = [
-       #"mini-imagenet",
+        "mini-imagenet",
         "FC100",
         # "tiered_imagenet",
     ]
