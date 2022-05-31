@@ -15,7 +15,7 @@ a graduation project
 
 ## Directory structure
 
-- `checkpoint`  pre-trained backbone used to generate feature of images, you can acqiure open source pre-trained backbones at [CONFIG.md](https://github.com/NoSW/moco-v3/blob/main/CONFIG.md)
+- `checkpoint`  pre-trained backbone used to generate feature of images, you can acqiure open source pre-trained backbones at [CONFIG.md](https://github.com/facebookresearch/moco-v3/blob/main/CONFIG.md)
 - `config` command-line argument files, e.g., the confing of `feature.py` is `feature.ymal`
 - `csv` output of `feature.py`,  <image_path, label> pair list of dataset 
 - `dataset` dataset of images after preprocessing (e.g. all images are RGB three-channel). The folder structure has no special requirements, modify your code according to `feature.py`
@@ -45,7 +45,7 @@ python main_moco.py \
 
 Then, move the checkpoint to `./checkpoint/`
 
-See [CONFIG.md](https://github.com/NoSW/moco-v3/blob/main/CONFIG.md) for more examples
+See [CONFIG.md](https://github.com/facebookresearch/moco-v3/blob/main/CONFIG.md) for more examples
 
 #### Step 2: Compute feture of support set and query set
 
