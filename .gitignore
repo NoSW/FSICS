@@ -1,26 +1,9 @@
 __pycache__
 .vscode
-MD
-atrash
-moco-v3
-data
 
-result/*
 checkpoint/*
 feature/*
 csv/*
 dataset/*
 
-
-*.tar
-*.log
-*.csv
-*.txt
-*.png
-*.jpg
-*.md
-*.ipynb
-
-!cifar10_tutorial.ipynb
-!README.md
 !.gitkeep

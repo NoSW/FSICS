@@ -1,0 +1,15 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 100
+sample_per_class: 600
+logistic_batch_size: 1
+fn: "PROB"
+desc: ""
+
+# tricks
+support_init_enabled: True
+
+sample_epoch: 3000
+logistic_epochs: 500
+plot_sample_rate: 50
+way: 2

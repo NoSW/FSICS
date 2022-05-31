@@ -1,0 +1,15 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 100
+sample_per_class: 600
+logistic_batch_size: 1
+fn: "MAPPING"
+desc: ""
+
+# tricks
+support_init_enabled: True
+
+sample_epoch: 5
+logistic_epochs: 300
+plot_sample_rate: 30 # sample 1 point per 50 points
+way: 5

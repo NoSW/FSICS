@@ -7,7 +7,7 @@ fn: "result"
 desc: ""
 
 # tricks
-support_init_enabled: False
+support_init_enabled: True
 
 sample_epoch: 10
 logistic_epochs: 1500

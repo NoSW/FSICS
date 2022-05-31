@@ -7,6 +7,6 @@ fn: "BACKBONE"
 desc: ""
 
 sample_epoch: 10
-logistic_epochs: 1000
+logistic_epochs: 1500
 plot_sample_rate: 50 # sample 1 point per 50 points
 way: 2

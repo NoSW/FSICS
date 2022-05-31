@@ -1,0 +1,15 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 5
+logistic_batch_size: 1
+
+# tricks
+support_init_enabled: True
+
+logistic_epochs: 500
+
+image_size: 224
+batch_size: 128
+workers: 8
+dataset_path: "dataset\\support_real"
+supp: False

@@ -1,0 +1,16 @@
+# fixed parapmeter
+optimizer: "Adam"
+n_classes: 5
+logistic_batch_size: 1
+
+# tricks
+support_init_enabled: True
+mixup_enabled: False
+
+logistic_epochs: 500
+way: 5
+shot: 10
+support_npy: "feature\\support_real-mocov3-vit_small_s.npy"
+query_npy: "feature\\utf-mocov3-vit_small.npy"
+out_path: "real_result"  # out path of predicted query set
+query_csv: "csv\\utf.csv" # csv file of query set
